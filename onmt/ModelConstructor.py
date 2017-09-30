@@ -49,7 +49,7 @@ def make_embeddings(opt, word_dict, feature_dicts, for_encoder=True):
                       num_feat_embeddings)
 
 
-def make_encoder(opt, embeddings):
+def make_encoder(opt, embeddings, ntoken, ninp):
     """
     Various encoder dispatcher function.
     Args:
@@ -68,7 +68,7 @@ def make_encoder(opt, embeddings):
     else:
         # "rnn" or "brnn"
         return RNNEncoder(opt.rnn_type, opt.brnn, opt.dec_layers,
-                          opt.rnn_size, opt.dropout, embeddings)
+                          opt.rnn_size, opt.dropout, embeddings, ntoken, ninp)
 
 
 def make_decoder(opt, embeddings):
@@ -124,10 +124,11 @@ def make_base_model(model_opt, fields, gpu, checkpoint=None):
     # Make encoder.
     if model_opt.model_type == "text":
         src_dict = fields["src"].vocab
+        ntokens = len(src_dict)
         feature_dicts = ONMTDataset.collect_feature_dicts(fields)
         src_embeddings = make_embeddings(model_opt, src_dict,
                                          feature_dicts)
-        encoder = make_encoder(model_opt, src_embeddings)
+        encoder = make_encoder(model_opt, src_embeddings, ntokens, model_opt.src_word_vec_size)
     else:
         encoder = ImageEncoder(model_opt.layers,
                                model_opt.brnn,

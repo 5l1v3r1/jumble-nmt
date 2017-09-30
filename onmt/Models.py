@@ -7,7 +7,8 @@ from torch.nn.utils.rnn import pad_packed_sequence as unpack
 
 import onmt
 from onmt.Utils import aeq
-
+from onmt.embed_regularize import embedded_dropout
+from onmt.weight_drop import WeightDrop
 
 class EncoderBase(nn.Module):
     """
@@ -52,8 +53,7 @@ class MeanEncoder(EncoderBase):
 
 class RNNEncoder(EncoderBase):
     """ The standard RNN encoder. """
-    def __init__(self, rnn_type, bidirectional, num_layers,
-                 hidden_size, dropout, embeddings):
+    def __init__(self, rnn_type, bidirectional, num_layers, hidden_size, dropout, embeddings, ntoken, ninp, dropouti=0.5, dropoute=0.1, wdrop=0, tie_weights=False):
         super(RNNEncoder, self).__init__()
 
         num_directions = 2 if bidirectional else 1
@@ -61,6 +61,17 @@ class RNNEncoder(EncoderBase):
         hidden_size = hidden_size // num_directions
         self.embeddings = embeddings
         self.no_pack_padded_seq = False
+
+        # additional from Konrad's code
+        self.idrop = nn.Dropout(dropouti)
+        self.drop = nn.Dropout(dropout)
+        self.encoder = nn.Embedding(ntoken, ninp)
+        self.lstm = WeightDrop(torch.nn.LSTM(ninp, ninp), ['weight_hh_l0'], dropout=wdrop)
+        self.decoder = nn.Linear(ninp, ntoken)
+        self.decoder.weight = self.encoder.weight
+        self.init_weights()
+        self.ninp = ninp
+        self.dropoute = dropoute
 
         # Use pytorch version when available.
         if rnn_type == "SRU":
@@ -80,18 +91,34 @@ class RNNEncoder(EncoderBase):
                     dropout=dropout,
                     bidirectional=bidirectional)
 
+    def init_weights(self):
+        initrange = 0.1
+        self.encoder.weight.data.uniform_(-initrange, initrange)
+        self.decoder.bias.data.fill_(0)
+        self.decoder.weight.data.uniform_(-initrange, initrange)
+
+    def init_hidden(self, bsz):
+        weight = next(self.parameters()).data
+        return (Variable(weight.new(1, bsz, self.ninp).zero_()),
+                Variable(weight.new(1, bsz, self.ninp).zero_()))
+
     def forward(self, input, lengths=None, hidden=None):
         """ See EncoderBase.forward() for description of args and returns."""
         self._check_args(input, lengths, hidden)
+        # emb = self.embeddings(input)
 
-        emb = self.embeddings(input)
+        emb = embedded_dropout(self.encoder, input, dropout=self.dropoute)
+        emb =  self.idrop(emb)
         s_len, batch, emb_dim = emb.size()
+        row_output, hidden = self.lstm(emb, hidden)
+        output = self.drop(row_output)
+        decoded = self.decoder(output.view(output.size(0)*output.size(1), output.size(2)))
+        result = decoded.view(output.size(0), output.size(1), decoded.size(1))
+        return hidden, result
 
-        packed_emb = emb
-        if lengths is not None and not self.no_pack_padded_seq:
-            # Lengths data is wrapped inside a Variable.
-            lengths = lengths.view(-1).tolist()
-            packed_emb = pack(emb, lengths)
+        '''
+
+        This code is from the previous ONMT
 
         outputs, hidden_t = self.rnn(packed_emb, hidden)
 
@@ -99,7 +126,7 @@ class RNNEncoder(EncoderBase):
             outputs = unpack(outputs)[0]
 
         return hidden_t, outputs
-
+        '''
 
 class RNNDecoderBase(nn.Module):
     """
@@ -491,3 +518,4 @@ class RNNDecoderState(DecoderState):
                 for e in self._all]
         self.hidden = tuple(vars[:-1])
         self.input_feed = vars[-1]
+
